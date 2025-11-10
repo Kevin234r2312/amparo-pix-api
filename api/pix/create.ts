@@ -19,37 +19,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: "Valor mínimo: 100 centavos (R$1,00)." });
     }
     if (!name || !email || !product || !cpf) {
-      return res.status(400).json({ error: "Campos 'name', 'email', 'product' e 'cpf' são obrigatórios." });
+      return res.status(400).json({
+        error: "Campos 'name', 'email', 'product' e 'cpf' são obrigatórios.",
+      });
     }
 
     const SECRET_KEY = process.env.PAYEVO_SECRET_KEY;
     if (!SECRET_KEY) {
-      return res.status(500).json({ error: "Chave secreta não configurada no ambiente da Vercel." });
+      return res.status(500).json({
+        error: "Chave secreta não configurada no ambiente da Vercel.",
+      });
     }
 
     const encodedAuth = Buffer.from(`${SECRET_KEY}:x`).toString("base64");
 
+    // 🔹 Novo payload com os campos corretos para documento
     const transactionData = {
       amount: Number(amount),
       paymentMethod: "pix",
       description: description || `Pagamento do produto ${product}`,
       customer: {
-        name: name,
-        email: email,
+        name,
+        email,
         phone: "+5511999999999",
-        document: cpf // 👈 AGORA CPF DIRETO, SEM OBJETO!
+        document_type: "CPF",
+        document_number: cpf, // 👈 agora com o formato correto
       },
       items: [
         {
           title: product,
           quantity: 1,
-          unitPrice: Number(amount)
-        }
+          unitPrice: Number(amount),
+        },
       ],
       metadata: {
         plataforma: "amparo",
-        origin_campaign: "organico"
-      }
+        origin_campaign: "organico",
+      },
     };
 
     const response = await fetch(PAYEVO_URL, {
@@ -75,7 +81,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const qrCodeUrl =
       data.qr_code_url ||
       data.qr_code_image ||
-      (data.qr_code_base64 ? `data:image/png;base64,${data.qr_code_base64}` : null);
+      (data.qr_code_base64
+        ? `data:image/png;base64,${data.qr_code_base64}`
+        : null);
 
     const brcode =
       data.brcode ||
@@ -100,6 +108,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (error: any) {
     console.error("Erro geral:", error);
-    return res.status(500).json({ error: error.message || "Erro interno inesperado." });
+    return res.status(500).json({
+      error: error.message || "Erro interno inesperado.",
+    });
   }
 }
