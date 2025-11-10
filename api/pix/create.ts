@@ -1,57 +1,54 @@
-// api/pix/create.ts
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 const PAYEVO_URL = "https://apiv2.payevo.com.br/functions/v1/transactions";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // ✅ Configuração CORS (necessária pro Framer)
+  // CORS liberado
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // ✅ Bloqueia métodos não permitidos
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    // ✅ Pega dados do corpo
     const { amount, description = "", campaign = "organico" } = req.body || {};
 
-    // ✅ Valida valor mínimo
-    if (!amount || amount < 100) {
+    // Validação do valor
+    const valorNumerico = Number(amount);
+    if (!valorNumerico || isNaN(valorNumerico) || valorNumerico < 100) {
       return res
         .status(400)
         .json({ error: "Valor mínimo: 100 centavos (R$1,00)." });
     }
 
-    // ✅ Busca chave secreta do ambiente
+    // Busca chave secreta
     const SECRET_KEY = process.env.PAYEVO_SECRET_KEY;
     if (!SECRET_KEY) {
-      return res
-        .status(500)
-        .json({ error: "Chave secreta não configurada no ambiente da Vercel." });
+      return res.status(500).json({
+        error: "Chave secreta não configurada no ambiente da Vercel.",
+      });
     }
 
-    // ✅ Cria autenticação Base64
+    // Autenticação Base64
     const auth = Buffer.from(SECRET_KEY).toString("base64");
 
-    // ✅ Corpo enviado pro PayEvo
+    // Corpo da transação
     const payload = {
-      amount, // em centavos
-      currency: "BRL",
-      payment_method: "PIX",
+      amount: Math.round(valorNumerico), // garante que é número inteiro
+      currency: "BRL", // deve estar em maiúsculo
+      payment_method: "PIX", // deve estar em maiúsculo
       capture: true,
-      description:
-        description || `Pagamento Pix R$ ${(amount / 100).toFixed(2)}`,
+      description: description || `Pagamento Pix R$ ${(valorNumerico / 100).toFixed(2)}`,
       metadata: {
         campaign,
         plataforma: "amparo",
       },
     };
 
-    // ✅ Envia a requisição ao PayEvo
+    // Requisição ao PayEvo
     const gatewayResp = await fetch(PAYEVO_URL, {
       method: "POST",
       headers: {
@@ -63,16 +60,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const data = await gatewayResp.json();
 
-    // ✅ Mostra o erro real do PayEvo (modo debug)
+    // Mostra erro detalhado se houver
     if (!gatewayResp.ok) {
-      console.error("Erro PayEvo:", data);
+      console.error("❌ Erro PayEvo:", data);
       return res.status(gatewayResp.status).json({
         error: "Erro interno ao criar transação",
-        raw: data, // 👈 Aqui aparece o conteúdo real da resposta do PayEvo
+        raw: data,
+        sentPayload: payload, // 👈 adicionei pra ver o corpo que foi enviado
       });
     }
 
-    // ✅ Mapeia campos possíveis do retorno
+    // Normaliza os campos possíveis
     const qrCodeUrl =
       data.qr_code_url ||
       data.qr_code_image ||
@@ -91,11 +89,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.warn("⚠️ Resposta inesperada PayEvo:", data);
       return res.status(500).json({
         error: "Resposta do gateway sem QR Code/Copia e Cola",
-        raw: data, // 👈 também devolve o corpo completo pra debug
+        raw: data,
+        sentPayload: payload,
       });
     }
 
-    // ✅ Retorna os dados normalizados pro Framer
+    // Sucesso
     return res.status(200).json({
       qr_code_url: qrCodeUrl,
       brcode,
@@ -103,9 +102,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       status: data.status || "pending",
     });
   } catch (err: any) {
-    console.error("Erro geral:", err);
-    return res
-      .status(500)
-      .json({ error: err.message || "Erro interno inesperado." });
+    console.error("💥 Erro geral:", err);
+    return res.status(500).json({
+      error: err.message || "Erro interno inesperado.",
+    });
   }
 }
