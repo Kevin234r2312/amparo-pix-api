@@ -7,57 +7,62 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
-
-  if (req.method !== "POST") {
+  if (req.method !== "POST")
     return res.status(405).json({ error: "Method not allowed" });
-  }
 
   try {
     const { amount, description, name, email, product, cpf } = req.body || {};
 
-    if (!amount || amount < 100) {
-      return res.status(400).json({ error: "Valor mínimo: 100 centavos (R$1,00)." });
-    }
-    if (!name || !email || !product || !cpf) {
+    if (!amount || amount < 100)
       return res.status(400).json({
-        error: "Campos 'name', 'email', 'product' e 'cpf' são obrigatórios.",
+        error: "Valor mínimo: 100 centavos (R$1,00).",
       });
-    }
+
+    if (!name || !email || !product || !cpf)
+      return res.status(400).json({
+        error:
+          "Campos 'name', 'email', 'product' e 'cpf' são obrigatórios.",
+      });
 
     const SECRET_KEY = process.env.PAYEVO_SECRET_KEY;
-    if (!SECRET_KEY) {
+    if (!SECRET_KEY)
       return res.status(500).json({
         error: "Chave secreta não configurada no ambiente da Vercel.",
       });
-    }
 
     const encodedAuth = Buffer.from(`${SECRET_KEY}:x`).toString("base64");
 
-    // 🚀 Agora o documento vai fora do customer
+    // ✅ Estrutura oficial segundo o suporte PayEvo
     const transactionData = {
       amount: Number(amount),
-      paymentMethod: "pix",
+      paymentMethod: "PIX", // método deve estar em maiúsculo
       description: description || `Pagamento do produto ${product}`,
       customer: {
         name,
         email,
         phone: "+5511999999999",
+        document: {
+          number: cpf,
+          type: "CPF",
+        },
       },
-      document: {
-        type: "CPF",
-        number: cpf, // 👈 fora do customer, exatamente como o gateway quer
+      pix: {
+        expiresInDays: 1,
       },
       items: [
         {
           title: product,
           quantity: 1,
           unitPrice: Number(amount),
+          externalRef: "PRODUTO0001",
         },
       ],
       metadata: {
         plataforma: "amparo",
         origin_campaign: "organico",
       },
+      postbackUrl: "https://amparo.org/api/pix/callback",
+      ip: "213.123.123.13",
     };
 
     const response = await fetch(PAYEVO_URL, {
