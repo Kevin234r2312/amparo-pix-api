@@ -1,146 +1,130 @@
+// /api/pix/create.ts
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 const PAYEVO_URL = "https://apiv2.payevo.com.br/functions/v1/transactions";
+
+// Dados padrão (neutros) — use seus dados oficiais (CNPJ da sua empresa/ONG)
+const DEFAULT_CUSTOMER = {
+  name: "Cliente",
+  email: "payments@amparo.org",
+  phone: "5511999999999",
+  document: { number: "27865757000102", type: "CNPJ" },
+  address: {
+    street: "Rua X",
+    streetNumber: "1",
+    complement: "",
+    zipCode: "11050100",
+    neighborhood: "Centro",
+    city: "Santos",
+    state: "SP",
+    country: "BR",
+  },
+};
+
+function uniqueExternalRef() {
+  return `pay-${Date.now()}-${Math.floor(Math.random() * 9000 + 1000)}`;
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    // ====== CAPTURA DE DADOS DO FRONT ======
-    const { amount, description, name, email, product, cpf } = req.body || {};
-
+    const body = req.body || {};
+    // aceitar amount (centavos) ou amountReais (reais)
+    let amount = Number(body.amount ?? 0);
+    if ((!amount || isNaN(amount) || amount < 100) && body.amountReais) {
+      amount = Math.round(Number(body.amountReais) * 100);
+    }
     if (!amount || amount < 100) {
-      return res
-        .status(400)
-        .json({ error: "Valor mínimo: 100 centavos (R$1,00)." });
-    }
-    if (!name || !email || !product || !cpf) {
-      return res
-        .status(400)
-        .json({ error: "Campos 'name', 'email', 'product' e 'cpf' são obrigatórios." });
+      return res.status(400).json({ error: "Valor mínimo: 100 centavos (R$1,00)." });
     }
 
-    // ====== CHAVE SECRETA ======
+    // Se o frontend enviar campos de cliente, usa; senão usa DEFAULT_CUSTOMER
+    let customer = DEFAULT_CUSTOMER;
+    if (body.name && body.email && body.cpf) {
+      customer = {
+        name: String(body.name),
+        email: String(body.email),
+        phone: String(body.phone ?? DEFAULT_CUSTOMER.phone),
+        document: { number: String(body.cpf), type: "CPF" },
+      };
+    }
+
     const SECRET_KEY = process.env.PAYEVO_SECRET_KEY;
     if (!SECRET_KEY) {
-      return res
-        .status(500)
-        .json({ error: "Chave secreta não configurada no ambiente da Vercel." });
+      return res.status(500).json({ error: "Chave secreta não configurada." });
     }
-
     const encodedAuth = Buffer.from(`${SECRET_KEY}:x`).toString("base64");
 
-    // ====== PAYLOAD CONFORME SUPORTE PAYEVO ======
-    const transactionData = {
+    const externalRef = body.externalRef || uniqueExternalRef();
+    const product = body.product || "Pagamento";
+
+    const payload = {
       amount: Number(amount),
-      paymentMethod: "PIX", // método em maiúsculo
-      description: description || `Pagamento do produto ${product}`,
+      paymentMethod: "PIX",
+      description: body.description || `Pagamento ${product}`, // neutro
       customer: {
-        name,
-        email,
-        phone: "+5511999999999",
+        name: customer.name,
+        email: customer.email,
+        phone: customer.phone,
         document: {
-          number: cpf,
-          type: "CPF"
+          number: String(customer.document.number),
+          type: String(customer.document.type),
         },
-        address: {
-          street: "Rua X",
-          streetNumber: "1",
-          complement: "",
-          zipCode: "11050100",
-          neighborhood: "Centro",
-          city: "Santos",
-          state: "SP",
-          country: "BR"
-        }
+        address: customer.address ?? undefined,
       },
-      pix: {
-        expiresInDays: 1
-      },
+      pix: { expiresInDays: 1 },
       items: [
         {
           title: product,
           quantity: 1,
           unitPrice: Number(amount),
-          externalRef: "PRODUTO0001"
-        }
+          externalRef,
+        },
       ],
       metadata: {
-        plataforma: "amparo",
-        origin_campaign: "organico"
+        source: body.source || "site",
+        externalRef,
       },
-      postbackUrl: "https://amparo.org/api/pix/callback",
-      ip: "213.123.123.13"
+      postbackUrl: process.env.POSTBACK_URL || null,
+      ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress || null,
     };
 
-    // ====== REQUISIÇÃO ======
     const response = await fetch(PAYEVO_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Basic ${encodedAuth}`
+        Authorization: `Basic ${encodedAuth}`,
       },
-      body: JSON.stringify(transactionData)
+      body: JSON.stringify(payload),
     });
 
     const data = await response.json();
 
-    // ====== ERRO PAYEVO ======
     if (!response.ok) {
       console.error("Erro PayEvo:", data);
-      return res.status(response.status).json({
-        error: "Erro interno ao criar transação Pix",
-        raw: data,
-        sentPayload: transactionData
-      });
+      return res.status(response.status).json({ error: "Erro ao criar transação", raw: data, sentPayload: payload });
     }
 
-    // ====== TRATAMENTO DO RETORNO ======
-    const qrCodeUrl =
-      data.qr_code_url ||
-      data.qr_code_image ||
-      (data.qr_code_base64
-        ? `data:image/png;base64,${data.qr_code_base64}`
-        : `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(
-            data?.pix?.qrcode || ""
-          )}`);
+    // extrai brcode (pix qr raw)
+    const brcode = data?.pix?.qrcode || data?.qrcode || data?.brcode || null;
+    const qr_code_url = data?.pix?.qrcode
+      ? `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(data.pix.qrcode)}`
+      : data?.qr_code_url || null;
 
-    const brcode =
-      data.brcode ||
-      data.qrcode ||
-      data.qr_code ||
-      data.qr_code_text ||
-      (data.pix && data.pix.qrcode) ||
-      null;
-
-    if (!brcode) {
-      console.warn("⚠️ Resposta inesperada PayEvo:", data);
-      return res.status(200).json({
-        warning: "Transação criada, mas sem imagem base64. Use 'brcode' abaixo.",
-        brcode: data?.pix?.qrcode,
-        transaction_id: data.id,
-        status: data.status
-      });
-    }
-
-    // ====== RETORNO FINAL ======
     return res.status(200).json({
-      qr_code_url: qrCodeUrl,
+      qr_code_url,
       brcode,
       transaction_id: data.id || data.transaction_id || null,
-      status: data.status || "waiting_payment"
+      status: data.status || "waiting_payment",
+      // raw: data // remova em produção se não quiser expor detalhes
     });
-  } catch (error: any) {
-    console.error("Erro geral:", error);
-    return res
-      .status(500)
-      .json({ error: error.message || "Erro interno inesperado." });
+  } catch (err: any) {
+    console.error("Erro geral:", err);
+    return res.status(500).json({ error: err.message || "Erro interno" });
   }
 }
