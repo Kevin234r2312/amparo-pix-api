@@ -33,7 +33,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const encodedAuth = Buffer.from(`${SECRET_KEY}:x`).toString("base64");
 
-    // 🔹 Novo payload com os campos corretos para documento
+    // 🚀 Agora o documento vai fora do customer
     const transactionData = {
       amount: Number(amount),
       paymentMethod: "pix",
@@ -42,8 +42,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         name,
         email,
         phone: "+5511999999999",
-        document_type: "CPF",
-        document_number: cpf, // 👈 agora com o formato correto
+      },
+      document: {
+        type: "CPF",
+        number: cpf, // 👈 fora do customer, exatamente como o gateway quer
       },
       items: [
         {
